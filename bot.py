@@ -39,16 +39,13 @@ def ask_main_format(message):
     user_id = message.from_user.id
     url = message.text
     
-    # Перевірка на ліміт посилань підряд
     current_count = user_spam_counter.get(user_id, 0)
     if current_count >= 3:
         bot.reply_to(message, "❌ Ой, забагато посилань одночасно! Дочекайтеся завантаження попередніх, більше 3 штук підряд не можна.")
         return
         
-    # Збільшуємо лічильник для користувача
     user_spam_counter[user_id] = current_count + 1
     
-    # Перше головне меню: вибір типу файлу
     markup = InlineKeyboardMarkup()
     markup.add(
         InlineKeyboardButton("🎬 Відео", callback_data=f"choose_qual|{url}"),
@@ -56,17 +53,15 @@ def ask_main_format(message):
     )
     bot.reply_to(message, "Що саме ви хочете завантажити?", reply_markup=markup)
 
-# 2. ОБРОБКА НА КНОПКИ (ВИБІР ЯКОСТІ ТА ЗАВАНТАЖЕННЯ)
+# 2. ОБРОБКА НА КНОПКИ
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-    # Ділимо дані кнопки на 3 частини (Action | Quality | URL)
     data_parts = call.data.split('|', 2)
     action_type = data_parts[0]
     
     chat_id = call.message.chat.id
     user_id = call.from_user.id
 
-    # ЯКЩО ТИСНУЛИ «ВІДЕО» — показуємо підменю з вибором якості відео
     if action_type == "choose_qual":
         url = data_parts[1]
         markup = InlineKeyboardMarkup()
@@ -78,27 +73,31 @@ def callback_query(call):
         bot.edit_message_text("Виберіть бажану якість відео:", chat_id, call.message.message_id, reply_markup=markup)
         return
 
-    # ЯКЩО ФІНАЛЬНИЙ ФОРМАТ ОБРАНО — починаємо скачування
     quality = data_parts[1]
     url = data_parts[2]
     
     status_msg = bot.edit_message_text("⏳ Починаю завантаження, зачекайте...", chat_id, call.message.message_id)
     filename_template = f"file_{chat_id}_{call.message.message_id}.%(ext)s"
     
-    # Налаштування завантажувача з авторизацією через OAuth
     ydl_opts = {
         'outtmpl': filename_template,
-        'max_filesize': 50 * 1024 * 1024, # Ліміт 50 МБ для Telegram
+        'max_filesize': 50 * 1024 * 1024,
         'quiet': True,
         'no_warnings': True,
     }
     
-    # 🌟 ЗАМІСТЬ КУКІВ ВКЛЮЧАЄМО OAuth ДЛЯ YOUTUBE
+    # 🔥 ПРАВИЛЬНЕ ПІДКЛЮЧЕННЯ КУКІВ ЧЕРЕЗ АБСОЛЮТНИЙ ШЛЯХ
     if "youtube.com" in url or "youtu.be" in url:
-        ydl_opts['username'] = 'oauth2'
-        ydl_opts['password'] = ''
+        # Отримуємо точний шлях до папки, де лежить bot.py
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cookies_path = os.path.join(base_dir, 'youtube_cookies.txt')
+        
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+        else:
+            # Якщо файлу немає, бот одразу попередить про це в консолі Render
+            print(f"УВАГА: Файл куків не знайдено за шляхом: {cookies_path}")
 
-    # Налаштування форматів під вибір користувача
     if action_type == "video":
         if quality == "360":
             ydl_opts['format'] = 'bestvideo[height<=360]+bestaudio/best[height<=360]'
@@ -121,7 +120,6 @@ def callback_query(call):
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             
-            # Перевірка розширень для аудіо
             if action_type == "audio" and not os.path.exists(filename):
                 base, _ = os.path.splitext(filename)
                 if os.path.exists(base + '.mp3'):
@@ -129,14 +127,12 @@ def callback_query(call):
                 elif os.path.exists(base + '.m4a'):
                     filename = base + '.m4a'
 
-        # Відправка файлу користувачу в чат
         with open(filename, 'rb') as f:
             if action_type == "video":
                 bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
             else:
                 bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
         
-        # Видаляємо повідомлення зі статусом "Завантаження..."
         bot.delete_message(chat_id, status_msg.message_id)
 
     except Exception as e:
@@ -144,7 +140,7 @@ def callback_query(call):
         if "setdefault" in error_message:
             error_message = "Помилка форматів YouTube. Оберіть іншу якість або інше відео."
         elif "Sign in to confirm" in error_message:
-            error_message = "Потрібна перша авторизація! Власнику бота необхідно ввести код в логах Render."
+            error_message = "YouTube заблокував запит. Сервер Render не зміг прочитати або підставити куки youtube_cookies.txt."
             
         bot.edit_message_text(f"❌ Помилка завантаження: {error_message}", chat_id, status_msg.message_id)
 
@@ -152,7 +148,6 @@ def callback_query(call):
         if filename and os.path.exists(filename):
             os.remove(filename)
             
-        # Звільняємо лічильник спаму користувача
         if user_id in user_spam_counter and user_spam_counter[user_id] > 0:
             user_spam_counter[user_id] -= 1
 
