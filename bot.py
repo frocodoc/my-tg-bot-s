@@ -12,6 +12,9 @@ ADMIN_ID = 1694972951
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 
+# Словник для відстеження кількості посилань від кожного користувача
+user_spam_counter = {}
+
 @app.route('/', methods=['GET'])
 def index():
     return "Бот успішно запущений, активний та працює 24/7!", 200
@@ -30,11 +33,22 @@ def get_message():
 def send_welcome(message):
     bot.reply_to(message, "Привіт! Надішли мені посилання на відео з TikTok, YouTube, Instagram або Pinterest, і вибери формат завантаження. 🚀")
 
-# Коли користувач надсилає посилання — показуємо кнопки
+# Обробка посилань
 @bot.message_handler(func=lambda message: message.text.startswith(('http://', 'https://')))
 def ask_format(message):
+    user_id = message.from_user.id
     url = message.text
     
+    # Перевірка на ліміт посилань подряд
+    current_count = user_spam_counter.get(user_id, 0)
+    if current_count >= 3:
+        bot.reply_to(message, "❌ Ой, забагато посилань одночасно! Дочекайтеся завантаження попередніх, більше 3 штук підряд не можна.")
+        return
+        
+    # Збільшуємо лічильник для користувача
+    user_spam_counter[user_id] = current_count + 1
+    
+    # Створюємо інлайн-кнопки
     markup = InlineKeyboardMarkup()
     markup.add(
         InlineKeyboardButton("🎬 Відео", callback_data=f"video|{url}"),
@@ -48,25 +62,26 @@ def ask_format(message):
 def callback_query(call):
     action_type, url = call.data.split('|', 1)
     chat_id = call.message.chat.id
+    user_id = call.from_user.id
     
     status_msg = bot.edit_message_text("⏳ Починаю завантаження, зачекайте...", chat_id, call.message.message_id)
     filename_template = f"file_{chat_id}_{call.message.message_id}.%(ext)s"
     
-    # Конфігурація завантажувача
+    # Оновлена безпечна конфігурація (без ignoreerrors)
     ydl_opts = {
+        'format': 'bestvideo+bestaudio/best/best*',
         'outtmpl': filename_template,
-        'max_filesize': 50 * 1024 * 1024, # Ліміт Telegram 50 МБ
+        'max_filesize': 50 * 1024 * 1024, # Ліміт 50 МБ
         'quiet': True,
         'no_warnings': True,
-        'ignoreerrors': True,
     }
     
-    # Автоматично підключаємо куки, якщо посилання з Ютубу і файл є на сервері
+    # Автоматично підключаємо куки для YouTube
     if "youtube.com" in url or "youtu.be" in url:
         if os.path.exists('youtube_cookies.txt'):
             ydl_opts['cookiefile'] = 'youtube_cookies.txt'
 
-    # Налаштування формату під вибір користувача
+    # Налаштування формату під вибір
     if action_type == "video":
         ydl_opts['format'] = 'bestvideo+bestaudio/best/best*'
     elif action_type == "audio":
@@ -83,7 +98,7 @@ def callback_query(call):
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             
-            # Перевірка розширень для аудіо (про всяк випадок)
+            # Перевірка розширень для аудіо
             if action_type == "audio" and not os.path.exists(filename):
                 base, _ = os.path.splitext(filename)
                 if os.path.exists(base + '.mp3'):
@@ -91,7 +106,7 @@ def callback_query(call):
                 elif os.path.exists(base + '.m4a'):
                     filename = base + '.m4a'
 
-        # Відправка готового файлу
+        # Відправка файлу
         with open(filename, 'rb') as f:
             if action_type == "video":
                 bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
@@ -99,13 +114,22 @@ def callback_query(call):
                 bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
         
         bot.delete_message(chat_id, status_msg.message_id)
-        if filename and os.path.exists(filename):
-            os.remove(filename)
-
+        
     except Exception as e:
-        bot.edit_message_text(f"❌ Помилка завантаження: {str(e)}", chat_id, status_msg.message_id)
+        error_message = str(e)
+        if "setdefault" in error_message:
+            error_message = "Помилка обробки форматів YouTube. Спробуйте ще раз або інше відео."
+        
+        bot.edit_message_text(f"❌ Помилка завантаження: {error_message}", chat_id, status_msg.message_id)
+        
+    finally:
+        # Цей блок виконується ЗАВЖДИ: після успіху чи після помилки
         if filename and os.path.exists(filename):
             os.remove(filename)
+            
+        # Зменшуємо лічильник користувача (звільняємо місце для нового посилання)
+        if user_id in user_spam_counter and user_spam_counter[user_id] > 0:
+            user_spam_counter[user_id] -= 1
 
 # Зворотний зв'язок з адміном
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith(('http://', 'https://')) and message.from_user.id != ADMIN_ID)
@@ -126,10 +150,9 @@ def reply_to_user(message):
         bot.reply_to(message, f"❌ Не вдалося відправити відповідь: {str(e)}")
 
 if __name__ == '__main__':
-    # Оновлюємо вебхук при кожному запуску
     bot.remove_webhook()
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
-    print(f"Webhook встановлено на: {RENDER_URL}/{BOT_TOKEN}")
+    print(f"Webhook успішно оновлено на: {RENDER_URL}/{BOT_TOKEN}")
     
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
