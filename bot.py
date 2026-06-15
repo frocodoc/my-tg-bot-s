@@ -10,12 +10,6 @@ BOT_TOKEN = '8550616930:AAHnyVIZV3m2lI90ATxZWYCQmjL3IZRLTdU'
 RENDER_URL = 'https://my-tg-bot-s.onrender.com'
 ADMIN_ID = 1694972951
 
-# 🌟 НАЛАШТУВАННЯ ПРОКСІ ДЛЯ YOUTUBE
-# Зареєструйся на будь-якому безкоштовному проксі-сервісі (наприклад, webshare.io або іншому) 
-# і встав сюди свої дані. Формат: http://username:password@ip:port
-# Якщо використовуєш безкоштовні публічні проксі без пароля, формат: http://ip:port
-YOUTUBE_PROXY = "http://oyuoddbv:qlxedwdiy3pf@38.154.203.95:5863"  # Заміни на своє робоче проксі
-
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 
@@ -55,9 +49,8 @@ def ask_main_format(message):
     markup = InlineKeyboardMarkup()
     if "youtube.com" in url or "youtu.be" in url:
         markup.add(
-            InlineKeyboardButton("🎬 Відео (360p)", callback_data=f"yt|360|{url}"),
-            InlineKeyboardButton("🎬 Відео (720p)", callback_data=f"yt|720|{url}"),
-            InlineKeyboardButton("🎵 Звук (MP3)", callback_data=f"yt|audio|{url}")
+            InlineKeyboardButton("🎬 Скачати Відео (YouTube)", callback_data=f"yt_api|video|{url}"),
+            InlineKeyboardButton("🎵 Скачати Аудіо (MP3)", callback_data=f"yt_api|audio|{url}")
         )
     else:
         markup.add(
@@ -78,42 +71,77 @@ def callback_query(call):
     user_id = call.from_user.id
     
     status_msg = bot.edit_message_text("⏳ Завантажую медіафайл, зачекайте...", chat_id, call.message.message_id)
-    filename_template = f"media_{chat_id}_{call.message.message_id}.%(ext)s"
     
-    ydl_opts = {
-        'outtmpl': filename_template,
-        'max_filesize': 60 * 1024 * 1024,
-        'quiet': True,
-        'no_warnings': True,
-    }
-
-    # --- СХЕМА ДЛЯ YOUTUBE (ЗВИЧАЙНИЙ YT-DLP + СТАБІЛЬНЕ ПРОКСІ) ---
-    if action_type == "yt":
-        # Пускаємо трафік через резидентське або приватне проксі, щоб приховати Render
-        if YOUTUBE_PROXY and YOUTUBE_PROXY != "http://p.webshare.io:80":
-            ydl_opts['proxy'] = YOUTUBE_PROXY
+    # --- СХЕМА 1: ОБХІД YOUTUBE ЧЕРЕЗ ПУБЛІЧНИЙ API-ШЛЮЗ ---
+    if action_type == "yt_api":
+        ext = "mp4" if mode == "video" else "mp3"
+        local_filename = f"api_{chat_id}_{call.message.message_id}.{ext}"
+        
+        try:
+            bot.edit_message_text("📡 Пробиваємо захист YouTube через хмарний шлюз...", chat_id, status_msg.message_id)
             
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-                'skip': ['dash', 'hls']
+            # Використовуємо універсальний API-сервіс для швидкого парсингу прямого лінку контенту
+            api_url = f"https://co.wuk.sh/api/json"
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json"
             }
+            payload = {
+                "url": url,
+                "vQuality": "720",
+                "isAudioOnly": True if mode == "audio" else False
+            }
+            
+            response = requests.post(api_url, json=payload, headers=headers, timeout=15)
+            res_data = response.json()
+            
+            # Якщо перший шлюз лежить, використовуємо стабільне дзеркало
+            if response.status_code != 200 or "url" not in res_data:
+                alt_api = f"https://api.v0.clic.ly/download"
+                response = requests.post(alt_api, json={"url": url, "type": mode}, timeout=15)
+                res_data = response.json()
+            
+            direct_url = res_data.get("url") or res_data.get("data", {}).get("url")
+            
+            if not direct_url:
+                raise Exception("Усі хмарні шлюзи обходу зараз перевантажені.")
+                
+            bot.edit_message_text("📥 Пряме посилання отримано! Передаю файл в Telegram...", chat_id, status_msg.message_id)
+            
+            # Стягуємо файл на сервер шматками
+            file_res = requests.get(direct_url, stream=True, timeout=60)
+            with open(local_filename, 'wb') as f:
+                for chunk in file_res.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        f.write(chunk)
+            
+            # Надсилаємо готове медіа користувачу
+            with open(local_filename, 'rb') as f:
+                if mode == "video":
+                    bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+                else:
+                    bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+                    
+            bot.delete_message(chat_id, status_msg.message_id)
+            
+        except Exception as e:
+            bot.edit_message_text(f"❌ Помилка хмарного обходу: {str(e)[:100]}", chat_id, status_msg.message_id)
+        finally:
+            if os.path.exists(local_filename):
+                os.remove(local_filename)
+            if user_id in user_spam_counter and user_spam_counter[user_id] > 0:
+                user_spam_counter[user_id] -= 1
+
+    # --- СХЕМА 2: СТАНДАРТНИЙ YT-DLP ДЛЯ ТТ / ІНСТИ / ПІНТЕРЕСТУ ---
+    elif action_type == "direct":
+        filename_template = f"direct_{chat_id}_{call.message.message_id}.%(ext)s"
+        ydl_opts = {
+            'outtmpl': filename_template,
+            'max_filesize': 50 * 1024 * 1024,
+            'quiet': True,
+            'no_warnings': True,
         }
         
-        if mode == "360":
-            ydl_opts['format'] = 'best[{ext=mp4}][height<=360]/best[height<=360]'
-        elif mode == "720":
-            ydl_opts['format'] = 'best[{ext=mp4}][height<=720]/best[height<=720]'
-        elif mode == "audio":
-            ydl_opts['format'] = 'bestaudio/best'
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-
-    # --- СХЕМА ДЛЯ ТТ / ІНСТИ / ПІНТЕРЕСТУ (НАПРЯМУ) ---
-    elif action_type == "direct":
         if mode == "audio":
             ydl_opts['format'] = 'bestaudio/best'
             ydl_opts['postprocessors'] = [{
@@ -124,44 +152,31 @@ def callback_query(call):
         else:
             ydl_opts['format'] = 'best'
 
-    filename = None
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            
-            if mode == "audio" and not os.path.exists(filename):
-                base, _ = os.path.splitext(filename)
-                if os.path.exists(base + '.mp3'): filename = base + '.mp3'
-                elif os.path.exists(base + '.m4a'): filename = base + '.m4a'
-
-        bot.edit_message_text("📥 Надсилаю файл у Телеграм...", chat_id, status_msg.message_id)
-        
-        with open(filename, 'rb') as f:
-            if mode == "audio":
-                bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
-            else:
-                bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
-                
-        bot.delete_message(chat_id, status_msg.message_id)
-            
-    except Exception as e:
-        err_text = str(e)
-        # Захист від зациклення ідентичних повідомлень у Телеграмі
-        friendly_msg = f"❌ Не вдалося обробити: {err_text[:80]}"
-        if "Sign in to confirm" in err_text:
-            friendly_msg = "❌ YouTube заблокував цей проксі-вузол. Спробуйте змінити адресу проксі в коді."
-        
+        filename = None
         try:
-            bot.edit_message_text(friendly_msg, chat_id, status_msg.message_id)
-        except Exception:
-            bot.send_message(chat_id, friendly_msg)
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                if mode == "audio" and not os.path.exists(filename):
+                    base, _ = os.path.splitext(filename)
+                    if os.path.exists(base + '.mp3'): filename = base + '.mp3'
+                    elif os.path.exists(base + '.m4a'): filename = base + '.m4a'
+
+            with open(filename, 'rb') as f:
+                if mode == "video":
+                    bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+                else:
+                    bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+            bot.delete_message(chat_id, status_msg.message_id)
             
-    finally:
-        if filename and os.path.exists(filename): 
-            os.remove(filename)
-        if user_id in user_spam_counter and user_spam_counter[user_id] > 0: 
-            user_spam_counter[user_id] -= 1
+        except Exception as e:
+            bot.edit_message_text(f"❌ Помилка завантаження медіа: {str(e)[:100]}", chat_id, status_msg.message_id)
+        finally:
+            if filename and os.path.exists(filename):
+                os.remove(filename)
+            if user_id in user_spam_counter and user_spam_counter[user_id] > 0:
+                user_spam_counter[user_id] -= 1
 
 # ЗВОРOTНИЙ ЗВ'ЯЗОК З АДМІНОМ
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith(('http://', 'https://')) and message.from_user.id != ADMIN_ID)
