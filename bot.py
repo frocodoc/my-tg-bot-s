@@ -4,7 +4,7 @@ from flask import Flask, request
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from yt_dlp import YoutubeDL
 
-# Твої налаштування (залишаються без змін)
+# Твої налаштування
 BOT_TOKEN = '8550616930:AAHnyVIZV3m2lI90ATxZWYCQmjL3IZRLTdU'
 RENDER_URL = 'https://my-tg-bot-s.onrender.com'
 ADMIN_ID = 1694972951
@@ -85,12 +85,13 @@ def callback_query(call):
     status_msg = bot.edit_message_text("⏳ Починаю завантаження, зачекайте...", chat_id, call.message.message_id)
     filename_template = f"file_{chat_id}_{call.message.message_id}.%(ext)s"
     
-    # Налаштування завантажувача
+    # Налаштування завантажувача + обхід блокувань через клієнт iOS
     ydl_opts = {
         'outtmpl': filename_template,
         'max_filesize': 50 * 1024 * 1024, # Ліміт 50 МБ для Telegram
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {'youtube': {'player_client': ['ios']}},
     }
     
     # Автоматично підключаємо куки для YouTube, якщо файл завантажено на GitHub
@@ -105,7 +106,7 @@ def callback_query(call):
         elif quality == "720":
             ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]'
         else:
-            ydl_opts['format'] = 'best' # "Неубивний" перевірений варіант для YouTube кліпів
+            ydl_opts['format'] = 'best' # "Неубивний" варіант для YouTube кліпів
             
     elif action_type == "audio":
         ydl_opts['format'] = 'bestaudio/best'
@@ -149,7 +150,7 @@ def callback_query(call):
         bot.edit_message_text(f"❌ Помилка завантаження: {error_message}", chat_id, status_msg.message_id)
 
     finally:
-        # Цей блок очищення виконується в будь-якому випадку (успіх чи помилка)
+        # Цей блок очищення виконується в будь-якому випадку
         if filename and os.path.exists(filename):
             os.remove(filename)
             
@@ -171,7 +172,7 @@ def reply_to_user(message):
         if "ID: " in reply_text:
             target_user_id = int(reply_text.split("ID: ")[1].split("\n")[0].strip())
             bot.send_message(target_user_id, f"💬 Відповідь від розробника:\n\n{message.text}")
-            bot.reply_to(message, "✅ Відповідь успішно доставлена користувачу!")
+            bot.reply_to(message, "✅ Відповідь успешно доставлена користувачу!")
     except Exception as e:
         bot.reply_to(message, f"❌ Не вдалося відправити відповідь: {str(e)}")
 
