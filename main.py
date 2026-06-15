@@ -4,7 +4,7 @@ from flask import Flask, request
 from yt_dlp import YoutubeDL
 
 # Налаштування токена та вашого ID
-BOT_TOKEN = '8550616930:AAHhuP6SFy-GndwJqRRXDbSMm1iwwS-pxhg'
+BOT_TOKEN = '8550616930:AAGSjXuoDeeVH-XcsNVV_7vNmh-XQyJRcnQ'
 ADMIN_ID = 1694972951
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
