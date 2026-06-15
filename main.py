@@ -3,7 +3,7 @@ import telebot
 from flask import Flask, request
 from yt_dlp import YoutubeDL
 
-# Оновлений токен та ваш ID
+# Налаштування токена та вашого ID
 BOT_TOKEN = '8550616930:AAHhuP6SFy-GndwJqRRXDbSMm1iwwS-pxhg'
 ADMIN_ID = 1694972951
 
@@ -69,16 +69,15 @@ def reply_to_user(message):
         reply_text = message.reply_to_message.text
         if "ID: " in reply_text:
             # Витягуємо ID користувача з тексту пересланого повідомлення
-            target_user_id = int(reply_text.split("ID: ")[1].split(")")[0])
+            target_user_id = int(reply_text.split("ID: ")[1].split("\n")[0].strip())
             bot.send_message(target_user_id, f"💬 Відповідь від розробника:\n\n{message.text}")
             bot.reply_to(message, "✅ Відповідь успішно доставлена користувачу!")
     except Exception as e:
         bot.reply_to(message, f"❌ Не вдалося відправити відповідь: {str(e)}")
 
-# АВТОМАТИЧНЕ НАЛАШТУВАННЯ ВЕБХУКУ ПРИ СТАРТІ НА RENDER
-RENDER_URL = 'https://onrender.com'
+# Фіксоване та надійне налаштування вебхуку вручну
 bot.remove_webhook()
-bot.set_webhook(url=RENDER_URL + BOT_TOKEN)
+bot.set_webhook(url='https://onrender.com' + BOT_TOKEN)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
