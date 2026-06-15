@@ -79,24 +79,26 @@ def callback_query(call):
     status_msg = bot.edit_message_text("⏳ Починаю завантаження, зачекайте...", chat_id, call.message.message_id)
     filename_template = f"file_{chat_id}_{call.message.message_id}.%(ext)s"
     
+    # 🌟 МАКСИМАЛЬНИЙ ЗАХИСТ ТА ОБХІД БАНІВ YOUTUBE
     ydl_opts = {
         'outtmpl': filename_template,
         'max_filesize': 50 * 1024 * 1024,
         'quiet': True,
         'no_warnings': True,
+        # Імітуємо реальний браузер Chrome на Windows
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        # Комбінуємо різні типи клієнтів (якщо один забанять — підтягнеться інший)
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['web_creator', 'ios', 'android', 'web'],
+                'skip': ['dash', 'hls']
+            }
+        }
     }
-    
-    # 🔥 ПРАВИЛЬНЕ ПІДКЛЮЧЕННЯ КУКІВ ЧЕРЕЗ АБСОЛЮТНИЙ ШЛЯХ
-    if "youtube.com" in url or "youtu.be" in url:
-        # Отримуємо точний шлях до папки, де лежить bot.py
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        cookies_path = os.path.join(base_dir, 'youtube_cookies.txt')
-        
-        if os.path.exists(cookies_path):
-            ydl_opts['cookiefile'] = cookies_path
-        else:
-            # Якщо файлу немає, бот одразу попередить про це в консолі Render
-            print(f"УВАГА: Файл куків не знайдено за шляхом: {cookies_path}")
 
     if action_type == "video":
         if quality == "360":
@@ -139,8 +141,8 @@ def callback_query(call):
         error_message = str(e)
         if "setdefault" in error_message:
             error_message = "Помилка форматів YouTube. Оберіть іншу якість або інше відео."
-        elif "Sign in to confirm" in error_message:
-            error_message = "YouTube заблокував запит. Сервер Render не зміг прочитати або підставити куки youtube_cookies.txt."
+        elif "Sign in to confirm" in error_message or "403" in error_message:
+            error_message = "YouTube заблокував IP сервера. Спробуйте через хвилину або оберіть іншу якість відео."
             
         bot.edit_message_text(f"❌ Помилка завантаження: {error_message}", chat_id, status_msg.message_id)
 
