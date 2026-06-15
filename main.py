@@ -76,7 +76,7 @@ def reply_to_user(message):
         bot.reply_to(message, f"❌ Не вдалося відправити відповідь: {str(e)}")
 
 # АВТОМАТИЧНЕ НАЛАШТУВАННЯ ВЕБХУКУ ПРИ СТАРТІ НА RENDER
-RENDER_URL = 'https://onrender.com'
+RENDER_URL = 'https://my-tg-bot-s.onrender.com'
 bot.remove_webhook()
 bot.set_webhook(url=RENDER_URL + BOT_TOKEN)
 
