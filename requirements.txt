@@ -2,4 +2,4 @@ pyTelegramBotAPI
 yt-dlp
 Flask
 gunicorn
-yt-dlp-youtube-oauth2
+
