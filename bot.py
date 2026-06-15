@@ -1,7 +1,6 @@
 import os
 import telebot
 import requests
-import random
 from flask import Flask, request
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from yt_dlp import YoutubeDL
@@ -14,26 +13,24 @@ ADMIN_ID = 1694972951
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 
-# Словник для контролю спаму посиланнями
 user_spam_counter = {}
 
-# ФУНКЦІЯ ДЛЯ ОТРИМАННЯ СВІЖИХ БЕЗКОШТОВНИХ ПРОКСІ
-def get_free_proxies():
-    try:
-        # Беремо перевірений безкоштовний API список проксі
-        url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            proxies = response.text.strip().split("\r\n")
-            # Якщо список замалий, беремо альтернативне джерело
-            if len(proxies) < 5:
-                url_alt = "https://pubproxy.com/api/proxy?limit=5&format=txt&http=true"
-                res_alt = requests.get(url_alt, timeout=5)
-                proxies = res_alt.text.strip().split("\n")
-            return [p for p in proxies if p]
-    except Exception:
-        pass
-    return []
+# Сервери обходу для YouTube
+INVIDIOUS_INSTANCES = [
+    "https://invidious.io.lol",
+    "https://yewtu.be",
+    "https://vid.puffyan.us",
+    "https://invidious.nerdvpn.de",
+    "https://inv.tux.digital"
+]
+
+def get_youtube_id(url):
+    """Витягує ID відео з посилання YouTube"""
+    if "youtu.be" in url:
+        return url.split("/")[-1].split("?")[0]
+    elif "v=" in url:
+        return url.split("v=")[1].split("&")[0]
+    return None
 
 @app.route('/', methods=['GET'])
 def index():
@@ -53,7 +50,7 @@ def get_message():
 def send_welcome(message):
     bot.reply_to(message, "Привіт! Надішли мені посилання на відео з TikTok, YouTube, Instagram або Pinterest, і вибери формат завантаження. 🚀")
 
-# 1. КОЛИ КОРИСТУВАЧ НАДСИЛАЄ ПОСИЛАННЯ
+# 1. ОБРОБКА ПОСИЛАННЯ ВІД КОРИСТУВАЧА
 @bot.message_handler(func=lambda message: message.text.startswith(('http://', 'https://')))
 def ask_main_format(message):
     user_id = message.from_user.id
@@ -67,10 +64,18 @@ def ask_main_format(message):
     user_spam_counter[user_id] = current_count + 1
     
     markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton("🎬 Відео", callback_data=f"choose_qual|{url}"),
-        InlineKeyboardButton("🎵 Звук (MP3)", callback_data=f"audio|best|{url}")
-    )
+    # Для YouTube залишаємо вибір якості або звуку
+    if "youtube.com" in url or "youtu.be" in url:
+        markup.add(
+            InlineKeyboardButton("🎬 Відео", callback_data=f"video|best|{url}"),
+            InlineKeyboardButton("🎵 Звук (MP3)", callback_data=f"audio|best|{url}")
+        )
+    else:
+        # Для ТТ, Інсти та Пінтересту робимо прості кнопки прямого завантаження
+        markup.add(
+            InlineKeyboardButton("🎬 Скачати Відео", callback_data=f"direct_dl|video|{url}"),
+            InlineKeyboardButton("🎵 Скачати Аудіо", callback_data=f"direct_dl|audio|{url}")
+        )
     bot.reply_to(message, "Що саме ви хочете завантажити?", reply_markup=markup)
 
 # 2. ОБРОБКА НА КНОПКИ
@@ -81,101 +86,113 @@ def callback_query(call):
     
     chat_id = call.message.chat.id
     user_id = call.from_user.id
-
-    if action_type == "choose_qual":
-        url = data_parts[1]
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("📉 Низька (360p)", callback_data=f"video|360|{url}"),
-            InlineKeyboardButton("🎬 Середня (720p)", callback_data=f"video|720|{url}"),
-            InlineKeyboardButton("🔥 Найкраща", callback_data=f"video|best|{url}")
-        )
-        bot.edit_message_text("Виберіть бажану якість відео:", chat_id, call.message.message_id, reply_markup=markup)
-        return
-
-    quality = data_parts[1]
-    url = data_parts[2]
     
-    status_msg = bot.edit_message_text("⏳ Готую безпечне підключення та завантажую...", chat_id, call.message.message_id)
-    filename_template = f"file_{chat_id}_{call.message.message_id}.%(ext)s"
-    
-    # Базові налаштування
-    ydl_opts = {
-        'outtmpl': filename_template,
-        'max_filesize': 50 * 1024 * 1024,
-        'quiet': True,
-        'no_warnings': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web_creator', 'ios', 'android'],
-                'skip': ['dash', 'hls']
-            }
+    # --- СХЕМА 1: ЗАВАНТАЖЕННЯ З YOUTUBE ЧЕРЕЗ API-ОБХІД ---
+    if action_type in ["video", "audio"]:
+        quality = data_parts[1]
+        url = data_parts[2]
+        
+        status_msg = bot.edit_message_text("⏳ З'єднуюсь із сервером обходу YouTube...", chat_id, call.message.message_id)
+        video_id = get_youtube_id(url)
+        
+        if not video_id:
+            bot.edit_message_text("❌ Не вдалося розпізнати посилання на YouTube.", chat_id, status_msg.message_id)
+            return
+
+        direct_url = None
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                res = requests.get(f"{instance}/api/v1/videos/{video_id}", timeout=3)
+                if res.status_code == 200:
+                    data = res.json()
+                    if action_type == "video":
+                        video_formats = [f for f in data.get('formatStreams', []) if f.get('container') == 'mp4']
+                        if video_formats:
+                            direct_url = video_formats[-1]['url']
+                            break
+                    else:
+                        audio_formats = [f for f in data.get('adaptiveFormats', []) if "audio/" in f.get('type', '')]
+                        if audio_formats:
+                            direct_url = audio_formats[0]['url']
+                            break
+            except Exception:
+                continue
+
+        if not direct_url:
+            bot.edit_message_text("❌ Сервери обходу YouTube зараз перевантажені. Спробуйте ще раз.", chat_id, status_msg.message_id)
+            if user_id in user_spam_counter and user_spam_counter[user_id] > 0: user_spam_counter[user_id] -= 1
+            return
+
+        ext = "mp4" if action_type == "video" else "mp3"
+        filename = f"yt_{chat_id}_{call.message.message_id}.{ext}"
+        
+        try:
+            bot.edit_message_text("📥 Обхід спрацював! Передаю файл у Телеграм...", chat_id, status_msg.message_id)
+            res_file = requests.get(direct_url, stream=True, timeout=30)
+            with open(filename, 'wb') as f:
+                for chunk in res_file.iter_content(chunk_size=1024*1024):
+                    if chunk: f.write(chunk)
+            
+            with open(filename, 'rb') as f:
+                if action_type == "video":
+                    bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+                else:
+                    bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+            bot.delete_message(chat_id, status_msg.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"❌ Помилка: {str(e)}", chat_id, status_msg.message_id)
+        finally:
+            if os.path.exists(filename): os.remove(filename)
+            if user_id in user_spam_counter and user_spam_counter[user_id] > 0: user_spam_counter[user_id] -= 1
+
+    # --- СХЕМА 2: ЗАВАНТАЖЕННЯ З TIKTOK / INSTAGRAM / PINTEREST ЧЕРЕЗ YT-DLP ---
+    elif action_type == "direct_dl":
+        sub_type = data_parts[1]
+        url = data_parts[2]
+        
+        status_msg = bot.edit_message_text("⏳ Завантажую медіафайл, зачекайте...", chat_id, call.message.message_id)
+        filename_template = f"direct_{chat_id}_{call.message.message_id}.%(ext)s"
+        
+        ydl_opts = {
+            'outtmpl': filename_template,
+            'max_filesize': 50 * 1024 * 1024,
+            'quiet': True,
+            'no_warnings': True,
         }
-    }
-
-    # 🌟 АВТОМАТИЧНИЙ ОБХІД БАНУ ЧЕРЕЗ ПРОКСІ
-    if "youtube.com" in url or "youtu.be" in url:
-        proxy_list = get_free_proxies()
-        if proxy_list:
-            selected_proxy = random.choice(proxy_list)
-            ydl_opts['proxy'] = f"http://{selected_proxy}"
-            print(f"[PROXY ACTIVATED]: Використовую обхідний IP: {selected_proxy}")
-
-    if action_type == "video":
-        if quality == "360":
-            ydl_opts['format'] = 'bestvideo[height<=360]+bestaudio/best[height<=360]'
-        elif quality == "720":
-            ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]'
+        
+        if sub_type == "audio":
+            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
         else:
             ydl_opts['format'] = 'best'
-            
-    elif action_type == "audio":
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
 
-    filename = None
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            
-            if action_type == "audio" and not os.path.exists(filename):
-                base, _ = os.path.splitext(filename)
-                if os.path.exists(base + '.mp3'):
-                    filename = base + '.mp3'
-                elif os.path.exists(base + '.m4a'):
-                    filename = base + '.m4a'
+        filename = None
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                if sub_type == "audio" and not os.path.exists(filename):
+                    base, _ = os.path.splitext(filename)
+                    if os.path.exists(base + '.mp3'): filename = base + '.mp3'
+                    elif os.path.exists(base + '.m4a'): filename = base + '.m4a'
 
-        with open(filename, 'rb') as f:
-            if action_type == "video":
-                bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
-            else:
-                bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
-        
-        bot.delete_message(chat_id, status_msg.message_id)
-
-    except Exception as e:
-        error_message = str(e)
-        if "setdefault" in error_message:
-            error_message = "Помилка форматів YouTube. Оберіть іншу якість або інше відео."
-        elif "Sign in to confirm" in error_message or "403" in error_message:
-            error_message = "Тимчасовий збій мережі YouTube. Спробуйте ще раз за секунду, бот змінить проксі-вузол."
+            with open(filename, 'rb') as f:
+                if sub_type == "video":
+                    bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+                else:
+                    bot.send_audio(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
+            bot.delete_message(chat_id, status_msg.message_id)
             
-        bot.edit_message_text(f"❌ Помилка: {error_message}", chat_id, status_msg.message_id)
-
-    finally:
-        if filename and os.path.exists(filename):
-            os.remove(filename)
-            
-        if user_id in user_spam_counter and user_spam_counter[user_id] > 0:
-            user_spam_counter[user_id] -= 1
+        except Exception as e:
+            bot.edit_message_text(f"❌ Помилка завантаження: {str(e)}", chat_id, status_msg.message_id)
+        finally:
+            if filename and os.path.exists(filename): os.remove(filename)
+            if user_id in user_spam_counter and user_spam_counter[user_id] > 0: user_spam_counter[user_id] -= 1
 
 # ЗВОРOTНИЙ ЗВ'ЯЗОК З АДМІНОМ
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith(('http://', 'https://')) and message.from_user.id != ADMIN_ID)
