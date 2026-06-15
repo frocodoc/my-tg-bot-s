@@ -1,5 +1,7 @@
 import os
 import telebot
+import requests
+import random
 from flask import Flask, request
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from yt_dlp import YoutubeDL
@@ -14,6 +16,24 @@ app = Flask(__name__)
 
 # Словник для контролю спаму посиланнями
 user_spam_counter = {}
+
+# ФУНКЦІЯ ДЛЯ ОТРИМАННЯ СВІЖИХ БЕЗКОШТОВНИХ ПРОКСІ
+def get_free_proxies():
+    try:
+        # Беремо перевірений безкоштовний API список проксі
+        url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            proxies = response.text.strip().split("\r\n")
+            # Якщо список замалий, беремо альтернативне джерело
+            if len(proxies) < 5:
+                url_alt = "https://pubproxy.com/api/proxy?limit=5&format=txt&http=true"
+                res_alt = requests.get(url_alt, timeout=5)
+                proxies = res_alt.text.strip().split("\n")
+            return [p for p in proxies if p]
+    except Exception:
+        pass
+    return []
 
 @app.route('/', methods=['GET'])
 def index():
@@ -41,7 +61,7 @@ def ask_main_format(message):
     
     current_count = user_spam_counter.get(user_id, 0)
     if current_count >= 3:
-        bot.reply_to(message, "❌ Ой, забагато посилань одночасно! Дочекайтеся завантаження попередніх, більше 3 штук підряд не можна.")
+        bot.reply_to(message, "❌ Ой, забагато посилань одночасно! Дочекайтеся завантаження попередніх.")
         return
         
     user_spam_counter[user_id] = current_count + 1
@@ -76,29 +96,33 @@ def callback_query(call):
     quality = data_parts[1]
     url = data_parts[2]
     
-    status_msg = bot.edit_message_text("⏳ Починаю завантаження, зачекайте...", chat_id, call.message.message_id)
+    status_msg = bot.edit_message_text("⏳ Готую безпечне підключення та завантажую...", chat_id, call.message.message_id)
     filename_template = f"file_{chat_id}_{call.message.message_id}.%(ext)s"
     
-    # 🌟 МАКСИМАЛЬНИЙ ЗАХИСТ ТА ОБХІД БАНІВ YOUTUBE
+    # Базові налаштування
     ydl_opts = {
         'outtmpl': filename_template,
         'max_filesize': 50 * 1024 * 1024,
         'quiet': True,
         'no_warnings': True,
-        # Імітуємо реальний браузер Chrome на Windows
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         },
-        # Комбінуємо різні типи клієнтів (якщо один забанять — підтягнеться інший)
         'extractor_args': {
             'youtube': {
-                'player_client': ['web_creator', 'ios', 'android', 'web'],
+                'player_client': ['web_creator', 'ios', 'android'],
                 'skip': ['dash', 'hls']
             }
         }
     }
+
+    # 🌟 АВТОМАТИЧНИЙ ОБХІД БАНУ ЧЕРЕЗ ПРОКСІ
+    if "youtube.com" in url or "youtu.be" in url:
+        proxy_list = get_free_proxies()
+        if proxy_list:
+            selected_proxy = random.choice(proxy_list)
+            ydl_opts['proxy'] = f"http://{selected_proxy}"
+            print(f"[PROXY ACTIVATED]: Використовую обхідний IP: {selected_proxy}")
 
     if action_type == "video":
         if quality == "360":
@@ -142,9 +166,9 @@ def callback_query(call):
         if "setdefault" in error_message:
             error_message = "Помилка форматів YouTube. Оберіть іншу якість або інше відео."
         elif "Sign in to confirm" in error_message or "403" in error_message:
-            error_message = "YouTube заблокував IP сервера. Спробуйте через хвилину або оберіть іншу якість відео."
+            error_message = "Тимчасовий збій мережі YouTube. Спробуйте ще раз за секунду, бот змінить проксі-вузол."
             
-        bot.edit_message_text(f"❌ Помилка завантаження: {error_message}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ Помилка: {error_message}", chat_id, status_msg.message_id)
 
     finally:
         if filename and os.path.exists(filename):
