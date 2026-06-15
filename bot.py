@@ -1,4 +1,6 @@
 import os
+import re
+import time
 import telebot
 import requests
 from flask import Flask, request
@@ -31,7 +33,7 @@ def get_message():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "Привіт! Надішли мені посилання на відео з TikTok, YouTube, Instagram або Pinterest, і вибери формат завантаження. 🚀")
+    bot.reply_to(message, "Привіт! Надішли мені посилання на відео з TikTok, YouTube, Instagram або Pinterest, і я його завантажу. 🚀")
 
 # 1. ОБРОБКА ПОСИЛАННЯ ВІД КОРИСТУВАЧА
 @bot.message_handler(func=lambda message: message.text.startswith(('http://', 'https://')))
@@ -48,11 +50,13 @@ def ask_main_format(message):
     
     markup = InlineKeyboardMarkup()
     if "youtube.com" in url or "youtu.be" in url:
+        # Для YouTube викликаємо прямий шлюз без вибору, щоб одразу віддати найкращий готовий mp4/mp3
         markup.add(
-            InlineKeyboardButton("🎬 Скачати Відео (YouTube)", callback_data=f"yt_api|video|{url}"),
-            InlineKeyboardButton("🎵 Скачати Аудіо (MP3)", callback_data=f"yt_api|audio|{url}")
+            InlineKeyboardButton("🎬 Скачати Відео (YouTube)", callback_data=f"sf|video|{url}"),
+            InlineKeyboardButton("🎵 Скачати Аудіо (MP3)", callback_data=f"sf|audio|{url}")
         )
     else:
+        # TikTok, Instagram, Pinterest — через стандартний локальний yt-dlp
         markup.add(
             InlineKeyboardButton("🎬 Скачати Відео", callback_data=f"direct|video|{url}"),
             InlineKeyboardButton("🎵 Скачати Аудіо", callback_data=f"direct|audio|{url}")
@@ -72,50 +76,72 @@ def callback_query(call):
     
     status_msg = bot.edit_message_text("⏳ Завантажую медіафайл, зачекайте...", chat_id, call.message.message_id)
     
-    # --- СХЕМА 1: ОБХІД YOUTUBE ЧЕРЕЗ ПУБЛІЧНИЙ API-ШЛЮЗ ---
-    if action_type == "yt_api":
+    # --- СХЕМА 1: АВТОРСЬКИЙ ШЛЮЗ ОБХОДУ YOUTUBE ЧЕРЕЗ SAVEFROM ---
+    if action_type == "sf":
         ext = "mp4" if mode == "video" else "mp3"
-        local_filename = f"api_{chat_id}_{call.message.message_id}.{ext}"
+        local_filename = f"sf_{chat_id}_{call.message.message_id}.{ext}"
         
         try:
-            bot.edit_message_text("📡 Пробиваємо захист YouTube через хмарний шлюз...", chat_id, status_msg.message_id)
+            bot.edit_message_text("📡 Підключаюся до магістрального шлюзу SaveFrom...", chat_id, status_msg.message_id)
             
-            # Використовуємо універсальний API-сервіс для швидкого парсингу прямого лінку контенту
-            api_url = f"https://co.wuk.sh/api/json"
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
+            # Надсилаємо офіційний запит на парсинг до бекенду SaveFrom
+            sf_api_url = "https://worker.sf-api.com/savefrom.php"
             payload = {
                 "url": url,
-                "vQuality": "720",
-                "isAudioOnly": True if mode == "audio" else False
+                "lang": "en",
+                "app": "com.savefrom.net",
+                "v": "242"
+            }
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Origin": "https://en.savefrom.net",
+                "Referer": "https://en.savefrom.net/"
             }
             
-            response = requests.post(api_url, json=payload, headers=headers, timeout=15)
-            res_data = response.json()
-            
-            # Якщо перший шлюз лежить, використовуємо стабільне дзеркало
-            if response.status_code != 200 or "url" not in res_data:
-                alt_api = f"https://api.v0.clic.ly/download"
-                response = requests.post(alt_api, json={"url": url, "type": mode}, timeout=15)
-                res_data = response.json()
-            
-            direct_url = res_data.get("url") or res_data.get("data", {}).get("url")
-            
-            if not direct_url:
-                raise Exception("Усі хмарні шлюзи обходу зараз перевантажені.")
+            res = requests.post(sf_api_url, data=payload, headers=headers, timeout=15)
+            # Прибираємо зайві JS-обгортки, якщо сервіс їх повертає
+            text_data = res.text
+            if "savefrom.set" in text_data:
+                text_data = text_data.split("savefrom.set(")[1].rstrip(");")
                 
-            bot.edit_message_text("📥 Пряме посилання отримано! Передаю файл в Telegram...", chat_id, status_msg.message_id)
+            import json
+            data = json.loads(text_data)
             
-            # Стягуємо файл на сервер шматками
-            file_res = requests.get(direct_url, stream=True, timeout=60)
+            # Шукаємо посилання у відповіді
+            links = data.get("url", [])
+            if not links:
+                raise Exception("Відео не знайдено або воно приватне.")
+                
+            direct_url = None
+            
+            if mode == "video":
+                # Шукаємо найкращу якість з готовим звуком (зазвичай це 720p або 360p mp4)
+                for link in links:
+                    if link.get("ext") == "mp4" and link.get("audio") is not False:
+                        direct_url = link["url"]
+                        break
+            else:
+                # Шукаємо аудіопотік
+                for link in links:
+                    if link.get("type") == "audio" or link.get("ext") == "mp3":
+                        direct_url = link["url"]
+                        break
+                if not direct_url:  # Якщо чистого mp3 немає, беремо будь-яке відео для подальшого надсилання
+                    direct_url = links[0]["url"]
+
+            if not direct_url:
+                direct_url = links[0]["url"]
+
+            bot.edit_message_text("📥 Шлюз пробито! Стягую медіапотік...", chat_id, status_msg.message_id)
+            
+            # Качаємо отриманий прямий потік шматками на диск Render
+            file_res = requests.get(direct_url, stream=True, headers={"User-Agent": headers["User-Agent"]}, timeout=60)
             with open(local_filename, 'wb') as f:
                 for chunk in file_res.iter_content(chunk_size=1024*1024):
                     if chunk:
                         f.write(chunk)
             
-            # Надсилаємо готове медіа користувачу
+            # Надсилаємо готовий файл у чат
             with open(local_filename, 'rb') as f:
                 if mode == "video":
                     bot.send_video(chat_id, f, reply_to_message_id=call.message.reply_to_message.message_id)
@@ -125,7 +151,7 @@ def callback_query(call):
             bot.delete_message(chat_id, status_msg.message_id)
             
         except Exception as e:
-            bot.edit_message_text(f"❌ Помилка хмарного обходу: {str(e)[:100]}", chat_id, status_msg.message_id)
+            bot.edit_message_text(f"❌ Помилка шлюзу SaveFrom: {str(e)[:100]}", chat_id, status_msg.message_id)
         finally:
             if os.path.exists(local_filename):
                 os.remove(local_filename)
@@ -171,7 +197,7 @@ def callback_query(call):
             bot.delete_message(chat_id, status_msg.message_id)
             
         except Exception as e:
-            bot.edit_message_text(f"❌ Помилка завантаження медіа: {str(e)[:100]}", chat_id, status_msg.message_id)
+            bot.edit_message_text(f"❌ Помилка соцмережі: {str(e)[:100]}", chat_id, status_msg.message_id)
         finally:
             if filename and os.path.exists(filename):
                 os.remove(filename)
