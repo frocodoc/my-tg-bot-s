@@ -14,7 +14,7 @@ ADMIN_ID = 1694972951
 # Зареєструйся на будь-якому безкоштовному проксі-сервісі (наприклад, webshare.io або іншому) 
 # і встав сюди свої дані. Формат: http://username:password@ip:port
 # Якщо використовуєш безкоштовні публічні проксі без пароля, формат: http://ip:port
-YOUTUBE_PROXY = "http://p.webshare.io:80"  # Заміни на своє робоче проксі
+YOUTUBE_PROXY = "http://oyuoddbv:qlxedwdiy3pf@38.154.203.95:5863"  # Заміни на своє робоче проксі
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
